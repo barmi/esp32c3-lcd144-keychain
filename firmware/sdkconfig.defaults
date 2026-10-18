@@ -1,0 +1,3 @@
+# Rust 코드는 C보다 스택을 많이 쓴다 (기본 3KB). 화면 그리기에 이어 Wi-Fi·HTTP까지
+# 메인 태스크에서 돌릴 것을 감안해 넉넉히 잡는다.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=20000

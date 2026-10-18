@@ -1,0 +1,6 @@
+target/
+.embuild/
+.DS_Store
+
+# 플래시 덤프. 출고 펌웨어에는 Wi-Fi 비밀번호와 API 키가 평문으로 들어 있다.
+*.bin
