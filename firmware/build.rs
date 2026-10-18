@@ -25,6 +25,8 @@ fn main() {
         }
     }
     println!("cargo:rerun-if-changed=src");
+    // toml-cfg가 cfg.toml을 읽는다. 파일이 새로 생겼을 때도 다시 빌드되도록 지켜본다.
+    println!("cargo:rerun-if-changed=cfg.toml");
 }
 
 fn git(args: &[&str]) -> Option<String> {

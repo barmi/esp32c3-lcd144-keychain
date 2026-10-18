@@ -1,0 +1,8 @@
+# 이 파일을 cfg.toml로 복사하고 값을 채운다. cfg.toml은 커밋하지 않는다 (.gitignore).
+# 값은 빌드할 때 펌웨어에 들어가므로, 바꾼 뒤에는 다시 빌드해서 올려야 한다.
+[esp32c3-lcd144-keychain]
+wifi_ssid = "공유기 이름"
+wifi_password = "비밀번호"
+# 날씨를 볼 위치 (위도, 경도). 기본값은 서울시청.
+latitude = "37.5665"
+longitude = "126.9780"

@@ -1,20 +1,21 @@
-//! 하드웨어 점검 펌웨어.
+//! Wi-Fi 시계·날씨 앱.
 //!
-//! LCD(색 반전·방향·오프셋), 버튼 K1/K2/BOOT, 빨간 LED가 회로도대로 동작하는지 눈으로
-//! 확인한다. 핀 배치와 근거는 docs/hardware.md 참고.
+//! 메인 스레드는 화면과 버튼을 맡고, 네트워크 스레드(net.rs)가 Wi-Fi 연결, SNTP 시각 동기화,
+//! 날씨 갱신을 맡는다. K2를 누른 채 켜면 하드웨어 점검 모드(bringup.rs)로 들어간다.
 
+mod bringup;
+mod button;
+mod clock;
+mod config;
 mod lcd;
+mod net;
+mod ui;
+mod weather;
 
-use embedded_graphics::{
-    mono_font::{
-        ascii::{FONT_10X20, FONT_6X10},
-        MonoTextStyle,
-    },
-    pixelcolor::Rgb565,
-    prelude::*,
-    primitives::{PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, Triangle},
-    text::{Alignment, Baseline, Text, TextStyleBuilder},
-};
+use std::sync::mpsc;
+
+use button::Button;
+use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::{
     delay::FreeRtos,
     gpio::{AnyInputPin, Pin, PinDriver, Pull},
@@ -25,6 +26,7 @@ use esp_idf_svc::hal::{
     },
     units::FromValueType,
 };
+use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::sys::{self, esp};
 use mipidsi::{
     interface::SpiInterface,
@@ -55,33 +57,29 @@ const LCD_OFFSET: (u16, u16) = (2, 1);
 /// 아래로 두고 쓰도록 270° 돌린다 (docs/hardware.md#lcd).
 const LCD_ORIENTATION: Orientation = Orientation::new().rotate(Rotation::Deg270);
 
-/// SPI 클럭. 제조사 데모는 40MHz로 돌리지만, 점검 단계라 여유 있게 잡는다.
+/// SPI 클럭. 제조사 데모는 40MHz로 돌리지만, 1초에 한 번 화면 전체(32KB)를 보내는 데는
+/// 이 정도로 충분하다.
 const LCD_SPI_MHZ: u32 = 26;
 
-/// 버튼 이름 (화면·로그 표시용). 순서는 main의 `buttons` 배열과 같다.
-const BUTTON_NAMES: [&str; 3] = ["K1", "K2", "BOOT"];
-
-/// 버튼 폴링 주기 (ms)
+/// 메인 루프 주기 (ms). 버튼 디바운스(button.rs)도 이 주기를 기준으로 한다.
 const LOOP_PERIOD_MS: u32 = 20;
 
-/// LED 깜빡임 반주기 (ms)
+/// Wi-Fi가 연결되지 않은 동안 LED 깜빡임 반주기 (ms)
 const LED_HALF_PERIOD_MS: u32 = 500;
 
 fn main() -> anyhow::Result<()> {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
-    log::info!("esp32c3-lcd144-keychain {FW_VERSION}: 하드웨어 점검");
+    log::info!("esp32c3-lcd144-keychain {FW_VERSION}");
 
     let p = Peripherals::take()?;
     let pins = p.pins;
 
     let mut led = PinDriver::output(pins.gpio11)?;
     // 세 버튼 모두 `GPIO ──[스위치]── GND` 배선이라 내부 풀업을 켠다.
-    let buttons = [
-        PinDriver::input(pins.gpio8, Pull::Up)?,
-        PinDriver::input(pins.gpio10, Pull::Up)?,
-        PinDriver::input(pins.gpio9, Pull::Up)?,
-    ];
+    let mut k1 = Button::new(PinDriver::input(pins.gpio8, Pull::Up)?);
+    let mut k2 = Button::new(PinDriver::input(pins.gpio10, Pull::Up)?);
+    let boot = Button::new(PinDriver::input(pins.gpio9, Pull::Up)?);
 
     let spi = SpiDeviceDriver::new_single(
         p.spi2,
@@ -111,39 +109,56 @@ fn main() -> anyhow::Result<()> {
         .init(&mut FreeRtos)
         .map_err(lcd_err)?;
 
-    // 색 점검: 화면 색과 글자가 다르면 반전(invert_colors)이나 색 순서(color_order)가 틀린 것
-    for (name, color) in [
-        ("RED", Rgb565::RED),
-        ("GREEN", Rgb565::GREEN),
-        ("BLUE", Rgb565::BLUE),
-        ("WHITE", Rgb565::WHITE),
-        ("BLACK", Rgb565::BLACK),
-    ] {
-        log::info!("색 점검: {name}");
-        draw_color_card(&mut display, name, color).map_err(lcd_err)?;
-        FreeRtos::delay_ms(800);
+    if k2.is_held() {
+        log::info!("K2가 눌려 있어 하드웨어 점검 모드로 들어간다");
+        return bringup::run(&mut display, [&k1, &k2, &boot], &mut led);
     }
 
-    draw_test_screen(&mut display).map_err(lcd_err)?;
-    let mut pressed = [false; 3];
-    for (i, pin) in buttons.iter().enumerate() {
-        pressed[i] = pin.is_low();
-        draw_button(&mut display, i, pressed[i]).map_err(lcd_err)?;
-    }
-    log::info!("점검 화면 표시. 버튼을 누르면 해당 칸이 초록색이 된다");
+    let shared = net::Shared::default();
+    let (refresh_tx, refresh_rx) = mpsc::channel();
+    net::spawn(
+        p.modem,
+        EspSystemEventLoop::take()?,
+        EspDefaultNvsPartition::take()?,
+        shared.clone(),
+        refresh_rx,
+    )?;
 
+    let mut frame = ui::Frame::default();
+    let mut screen = ui::Screen::Clock;
+    let mut shown: Option<ui::View> = None;
     let mut tick: u32 = 0;
     loop {
-        for (i, pin) in buttons.iter().enumerate() {
-            let now = pin.is_low();
-            if now != pressed[i] {
-                pressed[i] = now;
-                log::info!("{} {}", BUTTON_NAMES[i], if now { "눌림" } else { "뗌" });
-                draw_button(&mut display, i, now).map_err(lcd_err)?;
-            }
+        if k1.pressed() {
+            screen = screen.next();
         }
-        if tick % (LED_HALF_PERIOD_MS / LOOP_PERIOD_MS) == 0 {
-            led.toggle()?;
+        if k2.pressed() {
+            log::info!("날씨 갱신 요청");
+            // 네트워크 스레드가 끝났으면 받을 곳이 없을 뿐이다
+            let _ = refresh_tx.send(());
+        }
+
+        let view = ui::View {
+            screen,
+            time: clock::now(),
+            status: shared.lock().unwrap().clone(),
+        };
+        let connected = view.status.wifi == net::WifiState::Connected;
+        // 시각에 초가 들어 있어 시계 화면은 1초에 한 번 다시 그린다
+        if shown.as_ref() != Some(&view) {
+            ui::draw(&mut frame, &view);
+            display
+                .set_pixels(0, 0, LCD_SIZE.0 - 1, LCD_SIZE.1 - 1, frame.pixels())
+                .map_err(lcd_err)?;
+            shown = Some(view);
+        }
+
+        // Wi-Fi가 연결되지 않은 동안 LED를 깜빡인다
+        let blink_on = (tick / (LED_HALF_PERIOD_MS / LOOP_PERIOD_MS)) % 2 == 0;
+        if !connected && blink_on {
+            led.set_high()?;
+        } else {
+            led.set_low()?;
         }
         tick = tick.wrapping_add(1);
         FreeRtos::delay_ms(LOOP_PERIOD_MS);
@@ -153,94 +168,4 @@ fn main() -> anyhow::Result<()> {
 /// 디스플레이 드라이버 오류는 std Error가 아니라서 anyhow로 바로 넘길 수 없다.
 fn lcd_err(e: impl core::fmt::Debug) -> anyhow::Error {
     anyhow::anyhow!("LCD: {e:?}")
-}
-
-/// 화면 전체를 `color`로 채우고 가운데에 색 이름을 쓴다.
-fn draw_color_card<D>(d: &mut D, name: &str, color: Rgb565) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = Rgb565>,
-{
-    d.clear(color)?;
-    let ink = if color == Rgb565::WHITE || color == Rgb565::GREEN {
-        Rgb565::BLACK
-    } else {
-        Rgb565::WHITE
-    };
-    let center = d.bounding_box().center();
-    Text::with_text_style(
-        name,
-        center,
-        MonoTextStyle::new(&FONT_10X20, ink),
-        TextStyleBuilder::new()
-            .alignment(Alignment::Center)
-            .baseline(Baseline::Middle)
-            .build(),
-    )
-    .draw(d)?;
-    Ok(())
-}
-
-/// 점검 화면의 고정 요소: 테두리, 위쪽 화살표, 버튼 이름, 펌웨어 버전.
-///
-/// - 테두리 네 변이 모두 1px로 보여야 오프셋이 맞다. 한 변이 사라지고 반대편에 잡음이
-///   보이면 `LCD_OFFSET`이 틀린 것이다.
-/// - 화살표는 화면의 위쪽을 가리킨다. 기기를 어느 방향으로 쥐었을 때 똑바로 보이는지
-///   확인해 화면 방향을 정한다.
-fn draw_test_screen<D>(d: &mut D) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = Rgb565>,
-{
-    d.clear(Rgb565::BLACK)?;
-    d.bounding_box()
-        .into_styled(PrimitiveStyle::with_stroke(Rgb565::WHITE, 1))
-        .draw(d)?;
-    Triangle::new(Point::new(64, 5), Point::new(55, 17), Point::new(73, 17))
-        .into_styled(PrimitiveStyle::with_fill(Rgb565::YELLOW))
-        .draw(d)?;
-
-    let small = MonoTextStyle::new(&FONT_6X10, Rgb565::WHITE);
-    let centered = TextStyleBuilder::new()
-        .alignment(Alignment::Center)
-        .baseline(Baseline::Middle)
-        .build();
-    Text::with_text_style("TOP", Point::new(64, 25), small, centered).draw(d)?;
-
-    let label = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
-    let left_middle = TextStyleBuilder::new().baseline(Baseline::Middle).build();
-    for (i, name) in BUTTON_NAMES.iter().enumerate() {
-        let y = button_row_y(i) + BUTTON_BOX_SIZE.height as i32 / 2;
-        Text::with_text_style(name, Point::new(10, y), label, left_middle).draw(d)?;
-    }
-
-    let version = MonoTextStyle::new(&FONT_6X10, Rgb565::CSS_GRAY);
-    Text::with_text_style(FW_VERSION, Point::new(64, 118), version, centered).draw(d)?;
-    Ok(())
-}
-
-/// 버튼 상태 칸 크기
-const BUTTON_BOX_SIZE: Size = Size::new(36, 18);
-
-/// `row`번째 버튼 칸의 위쪽 y 좌표
-fn button_row_y(row: usize) -> i32 {
-    36 + row as i32 * 24
-}
-
-/// 버튼 상태 칸: 눌리면 초록으로 채우고, 떼면 회색 테두리만 그린다.
-fn draw_button<D>(d: &mut D, row: usize, pressed: bool) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = Rgb565>,
-{
-    let fill = if pressed {
-        Rgb565::GREEN
-    } else {
-        Rgb565::BLACK
-    };
-    let style = PrimitiveStyleBuilder::new()
-        .stroke_color(Rgb565::CSS_GRAY)
-        .stroke_width(1)
-        .fill_color(fill)
-        .build();
-    Rectangle::new(Point::new(80, button_row_y(row)), BUTTON_BOX_SIZE)
-        .into_styled(style)
-        .draw(d)
 }

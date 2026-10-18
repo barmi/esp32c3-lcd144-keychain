@@ -4,3 +4,6 @@ target/
 
 # 플래시 덤프. 출고 펌웨어에는 Wi-Fi 비밀번호와 API 키가 평문으로 들어 있다.
 *.bin
+
+# Wi-Fi 접속 정보 (firmware/cfg.toml.example을 복사해서 만든다)
+firmware/cfg.toml
