@@ -25,6 +25,7 @@ Spotpear ESP32-C3 1.44" LCD 키링용 펌웨어. Rust std(ESP-IDF) 환경.
 - LCD ST7735S 128×128: **SCK=GPIO3, MOSI=GPIO4, CS=GPIO2, DC=GPIO0, RST=GPIO5**. 백라이트는 3.3V 직결이라 끄거나 밝기를 바꿀 수 없다.
 - 버튼(모두 active-low, 외부 풀업 없음 → 내부 풀업): **K1=GPIO8, K2=GPIO10, BOOT=GPIO9**. GPIO8·9는 부팅 스트래핑 핀.
 - 빨간 LED=GPIO11 (active-high). eFuse `VDD_SPI_AS_GPIO`가 이미 켜져 있어 GPIO로 쓸 수 있다.
+- GPIO4~7은 JTAG 핀이라 칩이 리셋되면 IO MUX 기능이 JTAG로 돌아간다. esp-idf-hal `PinDriver`는 기능을 바꾸지 않으므로, GPIO5(LCD RST)·IO6·IO7은 `PinDriver` 전에 `gpio_reset_pin()`을 부른다. 안 하면 출력이 핀에 나가지 않는다 (#2).
 - 헤더: IO1, IO6, IO7, IO20(U0RXD), IO21(U0TXD), GND.
 - 배터리 전압 측정 회로와 전원 스위치가 없다.
 - LCD는 mipidsi 내장 `ST7735s` 모델로는 흰 화면만 나온다 (초기화 값이 이 패널과 맞지 않음). 패널 전용 모델 `firmware/src/lcd.rs`를 쓴다: CircuitPython 초기화 순서, 메모리 132×132.

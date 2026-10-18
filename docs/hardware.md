@@ -30,10 +30,10 @@ USB 단자를 아래로 두고 화면을 볼 때 K1·K2는 위쪽 가장자리(�
 | 1 | 헤더 `IO1` | ADC1_CH1 |
 | 2 | LCD CS | 부팅 스트래핑 핀 |
 | 3 | LCD SCK | |
-| 4 | LCD MOSI (SDA) | |
-| 5 | LCD RST | |
-| 6 | 헤더 `IO6` | |
-| 7 | 헤더 `IO7` | |
+| 4 | LCD MOSI (SDA) | JTAG MTMS 핀 |
+| 5 | LCD RST | JTAG MTDI 핀. `PinDriver` 전에 GPIO 기능을 골라야 한다 (아래) |
+| 6 | 헤더 `IO6` | JTAG MTCK 핀 |
+| 7 | 헤더 `IO7` | JTAG MTDO 핀 |
 | 8 | K1 (active-low) | 부팅 스트래핑 핀 |
 | 9 | BOOT (active-low) | 부팅 스트래핑 핀. 누른 채 리셋하면 다운로드 모드 |
 | 10 | K2 (active-low) | |
@@ -44,6 +44,7 @@ USB 단자를 아래로 두고 화면을 볼 때 K1·K2는 위쪽 가장자리(�
 | 21 | 헤더 `IO21` (U0TXD) | |
 
 - 버튼 세 개는 모두 `GPIO ──[스위치]── GND` 배선이고 외부 풀업이 없다. 내부 풀업을 켜야 한다.
+- GPIO4~7은 JTAG 핀이라 칩이 리셋되면 IO MUX 기능이 JTAG로 돌아간다. ESP-IDF SPI 드라이버는 GPIO 기능을 직접 고르지만 esp-idf-hal의 `PinDriver`는 방향만 바꾼다. 그래서 GPIO5(LCD RST)와 헤더 IO6·IO7을 `PinDriver`로 쓸 때는 먼저 `gpio_reset_pin()`으로 GPIO 기능을 고른다 ([#2](https://github.com/barmi/esp32c3-lcd144-keychain/issues/2)).
 - RESET은 CHIP_EN(10kΩ 풀업 + 100nF)을 GND로 당긴다.
 - 헤더 실크 인쇄는 `IO 1 6 7 20 21 GND`이고, 아래쪽 가장자리에 `3V3`, `5V` 패드가 따로 있다.
 
@@ -61,7 +62,8 @@ USB 단자를 아래로 두고 화면을 볼 때 K1·K2는 위쪽 가장자리(�
 - MADCTL `0xC8`(MX|MY)에 오프셋 (2, 1)을 쓰면, USB 단자를 아래로 둔 기준으로 오른쪽 끝에 2px 흰 줄이 남는다. 뒤집힌 방향의 행 오프셋은 GREENTAB3처럼 3이어야 하므로, 패널은 132×132 메모리처럼 동작한다. mipidsi 내장 모델은 메모리를 132×162로 보고 뒤집힌 방향의 오프셋을 계산하므로, 전용 모델은 메모리를 132×132로 둔다.
 - MADCTL `0xC8`에서는 화면 위쪽이 USB 단자를 아래로 둔 기준 왼쪽에 보인다. 그러므로 패널 기본 방향(MADCTL `0x00`, 제조사 데모의 `setRotation(2)`)은 USB 단자를 오른쪽에 두어야 위쪽이 위로 온다.
 - 펌웨어는 USB 단자를 아래로 두고 쓰도록 270° 돌린다(mipidsi `Rotation::Deg270`, MADCTL `0xA8`). 이 방향에서 화면이 똑바로 보이고, BGR 색 순서도 맞다.
-- K1, K2, BOOT 버튼이 회로도의 GPIO(8, 10, 9)대로 입력된다.
+- K1, K2, BOOT 버튼이 회로도의 GPIO(8, 10, 9)대로 입력되고, 빨간 LED(GPIO11)도 켜진다.
+- LCD RST(GPIO5)를 GPIO 기능으로 바꾸지 않으면 리셋 출력이 핀에 나가지 않는다. 이 선은 풀업·풀다운 없이 떠 있어서, 앞서 돈 펌웨어가 HIGH로 올려 둔 전압이 남아 있는 동안에는 화면이 나왔다. RESET 버튼으로 재시작하면 LCD가 리셋 상태에 묶여 흰 화면으로 남았다 ([#2](https://github.com/barmi/esp32c3-lcd144-keychain/issues/2)).
 
 ## 전원
 

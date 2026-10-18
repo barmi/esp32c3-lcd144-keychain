@@ -17,7 +17,7 @@ use embedded_graphics::{
 };
 use esp_idf_svc::hal::{
     delay::FreeRtos,
-    gpio::{AnyInputPin, PinDriver, Pull},
+    gpio::{AnyInputPin, Pin, PinDriver, Pull},
     peripherals::Peripherals,
     spi::{
         config::{Config, DriverConfig},
@@ -25,6 +25,7 @@ use esp_idf_svc::hal::{
     },
     units::FromValueType,
 };
+use esp_idf_svc::sys::{self, esp};
 use mipidsi::{
     interface::SpiInterface,
     options::{ColorInversion, ColorOrder, Orientation, Rotation},
@@ -92,6 +93,9 @@ fn main() -> anyhow::Result<()> {
         &Config::new().baudrate(LCD_SPI_MHZ.MHz().into()),
     )?;
     let dc = PinDriver::output(pins.gpio0)?;
+    // 칩이 리셋되면 GPIO5의 IO MUX 기능은 JTAG(MTDI)로 돌아간다. esp-idf-hal의 PinDriver는
+    // 방향만 바꾸고 기능을 GPIO로 고르지 않으므로, 그대로는 LCD 리셋 출력이 핀에 나가지 않는다 (#2).
+    esp!(unsafe { sys::gpio_reset_pin(pins.gpio5.pin() as _) })?;
     let rst = PinDriver::output(pins.gpio5)?;
     let mut buffer = [0u8; 1024];
     let di = SpiInterface::new(spi, dc, &mut buffer);

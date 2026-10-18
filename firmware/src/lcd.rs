@@ -13,7 +13,7 @@ use embedded_hal::delay::DelayNs;
 use mipidsi::{
     dcs::{
         BitsPerPixel, EnterNormalMode, ExitSleepMode, InterfaceExt, PixelFormat, SetAddressMode,
-        SetDisplayOn, SetInvertMode, SetPixelFormat,
+        SetDisplayOn, SetInvertMode, SetPixelFormat, SoftReset,
     },
     interface::Interface,
     models::{Model, ModelInitError},
@@ -47,6 +47,10 @@ impl Model for St7735s144 {
         let madctl = SetAddressMode::from(options);
 
         // 리셋이 풀린 뒤 명령을 받기까지 120ms가 필요하다
+        delay.delay_ms(150);
+        // 화면이 나오는 Arduino 점검 스케치와 제조사 데모(TFT_eSPI)처럼 하드웨어 리셋 뒤
+        // 소프트웨어 리셋도 한 번 건다.
+        di.write_command(SoftReset)?;
         delay.delay_ms(150);
         di.write_command(ExitSleepMode)?;
         delay.delay_ms(150);
